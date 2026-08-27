@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# Advanced SEO: Instruct crawlers to find the sitemap immediately
+Sitemap: https://freepdfconverter.com/sitemap.xml

@@ -1,0 +1,6 @@
+{
+  "name": "FreePDFConverter",
+  "description": "Free continuous & paginated PDF converter for screenshots, PNGs, and live websites.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
