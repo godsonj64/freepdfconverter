@@ -20,9 +20,6 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "pdf-lib": "^1.17.1",
-    "puppeteer": "^25.9.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "react-image-crop": "^11.1.2",
@@ -32,7 +29,6 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.14.0",
-    "@types/puppeteer": "^7.0.4",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
