@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sliders, FileText, Layout, Maximize2, Hash, Clock, FileCode, Check } from 'lucide-react';
+import { Sliders, FileText, Layout, Maximize2, Hash, Clock, FileCode, Check, Lock, ShieldCheck } from 'lucide-react';
 import { ConversionSettings, LayoutMode, MarginOption, QualityOption } from '../types';
 
 interface SettingsPanelProps {
@@ -33,7 +33,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
             <Layout className="w-3.5 h-3.5 text-[#313033]" />
             Document Layout Mode
           </label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {[
               { id: 'continuous' as LayoutMode, label: 'Continuous', sub: 'Single canvas' },
               { id: 'paginated_a4' as LayoutMode, label: 'A4 Pages', sub: '210×297mm' },
@@ -70,7 +70,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
             <Maximize2 className="w-3.5 h-3.5 text-[#313033]" />
             Quality & Compression
           </label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {[
               { id: 'maximum' as QualityOption, label: 'Ultra HD', sub: 'Lossless PNG' },
               { id: 'high' as QualityOption, label: 'High (92%)', sub: 'Balanced JPEG' },
@@ -107,7 +107,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
             <FileText className="w-3.5 h-3.5 text-[#313033]" />
             Page Margins
           </label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {[
               { id: 'none' as MarginOption, label: 'Zero (0mm)', sub: 'Edge-to-edge' },
               { id: 'compact' as MarginOption, label: 'Compact (5mm)', sub: 'Clean frame' },
@@ -135,6 +135,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
                 </button>
               );
             })}
+          </div>
+        </div>
+
+        {/* Security & Watermark */}
+        <div className="space-y-3">
+          <label className="text-xs font-semibold text-[#151515] flex items-center gap-1.5 mb-1.5">
+            <Lock className="w-3.5 h-3.5 text-[#313033]" />
+            Security & Watermarking
+          </label>
+          <div className="flex flex-col gap-3">
+            <input
+              type="text"
+              placeholder="Watermark Text (Optional)"
+              value={settings.watermark || ''}
+              onChange={(e) => updateSetting('watermark', e.target.value)}
+              className="editorial-input text-xs rounded-xl border-[#aaa] focus:border-[#0B57D0] w-full"
+            />
           </div>
         </div>
 

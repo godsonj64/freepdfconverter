@@ -17,12 +17,14 @@ export async function getProcessedCanvas(item: ImageItem): Promise<HTMLCanvasEle
       }
 
       const rot = (item.rotation % 360 + 360) % 360;
+      const naturalW = img.naturalWidth || img.width;
+      const naturalH = img.naturalHeight || img.height;
       if (rot === 90 || rot === 270) {
-        canvas.width = img.height;
-        canvas.height = img.width;
+        canvas.width = naturalH;
+        canvas.height = naturalW;
       } else {
-        canvas.width = img.width;
-        canvas.height = img.height;
+        canvas.width = naturalW;
+        canvas.height = naturalH;
       }
 
       ctx.save();
@@ -36,7 +38,7 @@ export async function getProcessedCanvas(item: ImageItem): Promise<HTMLCanvasEle
         ctx.translate(0, canvas.height);
         ctx.rotate((270 * Math.PI) / 180);
       }
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, 0, 0, naturalW, naturalH);
       ctx.restore();
 
       resolve(canvas);
@@ -88,7 +90,7 @@ export async function generatePdfBlob(
     const finalHeightMm = Math.max(totalHeightMm, 100);
 
     const doc = new jsPDF({
-      orientation: 'portrait',
+      orientation: finalHeightMm < pdfWidth ? 'landscape' : 'portrait',
       unit: 'mm',
       format: [pdfWidth, finalHeightMm],
       compress: settings.quality !== 'maximum',

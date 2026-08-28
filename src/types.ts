@@ -24,6 +24,7 @@ export interface ConversionSettings {
   showPageNumbers: boolean;
   addTimestamp: boolean;
   scaleMode: 'fit_width' | 'original';
+  watermark?: string;
 }
 
 export interface WebCaptureConfig {
@@ -31,4 +32,6 @@ export interface WebCaptureConfig {
   viewport: ViewportDevice;
   colorScheme: 'light' | 'dark';
   fullPage: boolean;
+  selector?: string;
+  cookieString?: string;
 }

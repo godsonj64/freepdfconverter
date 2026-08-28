@@ -1,5 +1,5 @@
-import React from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState } from 'react';
+import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { 
   ChevronUp, 
   ChevronDown, 
@@ -8,7 +8,9 @@ import {
   Copy, 
   ArrowUpDown, 
   Maximize2,
-  Plus
+  Plus,
+  Crop,
+  Scissors
 } from 'lucide-react';
 import { ImageItem } from '../types';
 
@@ -23,6 +25,9 @@ interface QueueManagerProps {
   onReverse: () => void;
   onOpenAddModal: () => void;
   onPreviewItem: (item: ImageItem) => void;
+  onCropItem: (item: ImageItem) => void;
+  onReorder: (newItems: ImageItem[]) => void;
+  onApplyGlobalCrop: (percentage: number) => void;
 }
 
 export const QueueManager: React.FC<QueueManagerProps> = ({
@@ -36,67 +41,104 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
   onReverse,
   onOpenAddModal,
   onPreviewItem,
+  onCropItem,
+  onReorder,
+  onApplyGlobalCrop
 }) => {
+  const [globalCropPercent, setGlobalCropPercent] = useState<number>(0);
   const totalSizeBytes = items.reduce((acc, curr) => acc + curr.size, 0);
   const totalSizeMb = (totalSizeBytes / (1024 * 1024)).toFixed(2);
 
   return (
     <div className="space-y-4">
       {/* M3 Action Toolbar Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#b8b8b8]">
-        <div className="flex items-center gap-2.5">
-          <span className="text-sm font-bold text-[#151515]">
-            Document Queue ({items.length} {items.length === 1 ? 'item' : 'items'})
-          </span>
-          <span className="editorial-chip py-1 px-2.5 bg-[#dedede] text-[#474747] font-mono text-xs border-none font-medium">
-            Total {totalSizeMb} MB
-          </span>
+      <div className="flex flex-col gap-4 pb-3 border-b border-[#b8b8b8]">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="text-sm font-bold text-[#151515]">
+              Image Staging: Cropping & Reordering ({items.length} {items.length === 1 ? 'item' : 'items'})
+            </span>
+            <span className="editorial-chip py-1 px-2.5 bg-[#dedede] text-[#474747] font-mono text-xs border-none font-medium">
+              Total {totalSizeMb} MB
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={onReverse}
+              title="Reverse image sequence"
+              className="editorial-btn editorial-btn-outlined text-xs py-1.5 px-3 h-8 gap-1.5 border-[#aaa] text-[#474747] hover:text-[#313033] flex-1 sm:flex-none justify-center"
+            >
+              <ArrowUpDown className="w-3.5 h-3.5 text-[#313033]" />
+              <span className="hidden sm:inline">Reverse Sequence</span>
+            </button>
+            
+            <button
+              type="button"
+              onClick={onOpenAddModal}
+              className="editorial-btn editorial-btn-tonal text-xs py-1.5 px-3 h-8 text-[#151515] bg-[#daf200] hover:bg-[#C2D7FA] flex-1 sm:flex-none justify-center"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add More</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onClearAll}
+              className="editorial-btn text-xs py-1.5 px-3 h-8 text-[#d32f2f] hover:bg-[#ffcdd2]/50 flex-none justify-center"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Clear All</span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onReverse}
-            title="Reverse image sequence"
-            className="editorial-btn editorial-btn-outlined text-xs py-1.5 px-3 h-8 gap-1.5 border-[#aaa] text-[#474747] hover:text-[#313033]"
-          >
-            <ArrowUpDown className="w-3.5 h-3.5 text-[#313033]" />
-            <span className="hidden sm:inline">Reverse Sequence</span>
-          </button>
-          
-          <button
-            type="button"
-            onClick={onOpenAddModal}
-            className="editorial-btn editorial-btn-tonal text-xs py-1.5 px-3 h-8 text-[#151515] bg-[#daf200] hover:bg-[#C2D7FA]"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add More</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onClearAll}
-            className="editorial-btn text-xs py-1.5 px-3 h-8 text-[#d32f2f] hover:bg-[#ffcdd2]/50"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Clear All</span>
-          </button>
+        {/* Global Crop Tool */}
+        <div className="bg-[#e0e0e0]/40 p-3 rounded-xl flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[#151515]">
+            <Scissors className="w-4 h-4 text-[#313033]" />
+            <span>Crop sticky headers (Top %):</span>
+          </div>
+          <div className="flex-1 flex items-center gap-3 w-full">
+            <input 
+              type="range" 
+              min="0" 
+              max="30" 
+              value={globalCropPercent}
+              onChange={(e) => setGlobalCropPercent(Number(e.target.value))}
+              className="w-full h-1.5 bg-[#b8b8b8] rounded-lg appearance-none cursor-pointer accent-[#0B57D0]"
+            />
+            <span className="text-xs font-mono font-medium text-[#474747] w-8">{globalCropPercent}%</span>
+            <button
+              type="button"
+              onClick={() => {
+                onApplyGlobalCrop(globalCropPercent);
+                setGlobalCropPercent(0);
+              }}
+              disabled={globalCropPercent === 0}
+              className="editorial-btn editorial-btn-dark py-1.5 px-3 text-xs h-7 disabled:opacity-50 whitespace-nowrap"
+            >
+              Apply to All
+            </button>
+          </div>
         </div>
       </div>
 
       {/* M3 Item List */}
-      <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
+      <Reorder.Group axis="y" values={items} onReorder={onReorder} className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
         <AnimatePresence>
           {items.map((item, index) => {
             const rot = (item.rotation % 360 + 360) % 360;
             return (
-                <motion.div
+                <Reorder.Item
                 layout
+                value={item}
                 key={item.id}
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="bg-[#f4f4f1] border border-[#b8b8b8] hover:border-[var(--charcoal)]/40 rounded-2xl p-3 flex items-center justify-between shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] transition-all duration-150 group"
+                className="bg-[#f4f4f1] border border-[#b8b8b8] hover:border-[var(--charcoal)]/40 rounded-2xl p-3 flex items-center justify-between shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] transition-all duration-150 group cursor-grab active:cursor-grabbing"
               >
                 {/* Left info & preview */}
                 <div className="flex items-center gap-3.5 overflow-hidden flex-1 min-w-0">
@@ -131,7 +173,7 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
                       src={item.previewUrl}
                       alt={item.name}
                       style={{ transform: `rotate(${rot}deg)` }}
-                      className="w-full h-full object-cover transition-transform duration-200"
+                      className="w-full h-full object-cover transition-transform duration-200 pointer-events-none"
                     />
                     <div className="absolute inset-0 bg-[var(--charcoal)]/40 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center text-white transition-opacity">
                       <Maximize2 className="w-3.5 h-3.5" />
@@ -162,6 +204,15 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
                 <div className="flex items-center gap-1 flex-shrink-0 ml-2">
                   <button
                     type="button"
+                    onClick={() => onCropItem(item)}
+                    title="Crop image"
+                    className="p-2 text-[#474747] hover:text-[#313033] hover:bg-[#daf200]/50 rounded-full transition-colors hidden sm:inline-flex"
+                  >
+                    <Crop className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => onRotate(item.id)}
                     title="Rotate 90° Clockwise"
                     className="p-2 text-[#474747] hover:text-[#313033] hover:bg-[#daf200]/50 rounded-full transition-colors"
@@ -187,11 +238,11 @@ export const QueueManager: React.FC<QueueManagerProps> = ({
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
-              </motion.div>
+              </Reorder.Item>
             );
           })}
         </AnimatePresence>
-      </div>
+      </Reorder.Group>
     </div>
   );
 };

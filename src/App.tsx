@@ -30,6 +30,7 @@ import { Header } from './components/Header';
 import { QueueManager } from './components/QueueManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { PreviewModal } from './components/PreviewModal';
+import { CropModal } from './components/CropModal';
 import { FeatureShowcase } from './components/FeatureShowcase';
 import { FAQSection } from './components/FAQSection';
 import { MissionStatement } from './components/MissionStatement';
@@ -70,6 +71,9 @@ export default function App() {
   const [previewDimensionsText, setPreviewDimensionsText] = useState('');
   const [previewTotalPages, setPreviewTotalPages] = useState(1);
   const [activePreviewItem, setActivePreviewItem] = useState<ImageItem | null>(null);
+
+  const [cropOpen, setCropOpen] = useState(false);
+  const [activeCropItem, setActiveCropItem] = useState<ImageItem | null>(null);
 
   // Toast notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -185,7 +189,67 @@ export default function App() {
     }
   };
 
+  // Global crop tool
+  const applyGlobalTopCrop = async (cropPercentage: number) => {
+    if (cropPercentage <= 0) return;
+    setIsConverting(true);
+    const factor = cropPercentage / 100;
+    
+    try {
+      const newItems = await Promise.all(items.map((item) => {
+        return new Promise<ImageItem>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const cropPixels = Math.floor(img.naturalHeight * factor);
+            const newHeight = img.naturalHeight - cropPixels;
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth;
+            canvas.height = newHeight;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return resolve(item);
+
+            ctx.drawImage(
+              img,
+              0, cropPixels, img.naturalWidth, newHeight,
+              0, 0, img.naturalWidth, newHeight
+            );
+
+            canvas.toBlob((blob) => {
+              if (!blob) return resolve(item);
+              const newFile = new File([blob], item.file.name, { type: item.file.type || 'image/png' });
+              const newPreviewUrl = URL.createObjectURL(blob);
+              
+              URL.revokeObjectURL(item.previewUrl);
+              
+              resolve({
+                ...item,
+                file: newFile,
+                previewUrl: newPreviewUrl,
+                height: newHeight,
+                size: blob.size
+              });
+            }, item.file.type || 'image/png', 1);
+          };
+          img.onerror = () => resolve(item);
+          img.src = item.previewUrl;
+        });
+      }));
+      setItems(newItems);
+      showToast(`Cropped top ${cropPercentage}% off all images!`);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to crop images.');
+    } finally {
+      setIsConverting(false);
+    }
+  };
+
   // Queue manipulation functions
+  const handleReorder = (newItems: ImageItem[]) => {
+    setItems(newItems);
+  };
+
   const removeItem = (id: string) => {
     setItems((prev) => {
       const itemToRemove = prev.find((i) => i.id === id);
@@ -344,22 +408,67 @@ export default function App() {
   };
 
   // Convert & Export PDF
+  const processSecurePdf = async (blob: Blob, settings: ConversionSettings) => {
+    if (!settings.watermark) return blob;
+    
+    // Convert blob to base64
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    const res = await fetch('/api/secure-pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pdfBase64: base64,
+        watermark: settings.watermark
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to secure PDF: ${err}`);
+    }
+    
+    const { pdfBase64: securedBase64 } = await res.json();
+    if (!securedBase64) {
+      throw new Error('No secured base64 returned from server');
+    }
+    
+    const fetchRes = await fetch(`data:application/pdf;base64,${securedBase64}`);
+    return await fetchRes.blob();
+  };
+
   const handleExportPDF = async () => {
     if (items.length === 0) return;
     setIsConverting(true);
 
     try {
-      const { blob, url, totalPages, dimensionsText } = await generatePdfBlob(items, settings);
+      let { blob, url, totalPages, dimensionsText } = await generatePdfBlob(items, settings);
+      
+      URL.revokeObjectURL(url); // Don't leak original URL
+      
+      blob = await processSecurePdf(blob, settings);
+      const secureUrl = URL.createObjectURL(blob);
       
       setPreviewPdfBlob(blob);
-      setPreviewPdfUrl(url);
+      setPreviewPdfUrl(prevUrl => {
+        if (prevUrl) URL.revokeObjectURL(prevUrl);
+        return secureUrl;
+      });
       setPreviewTotalPages(totalPages);
       setPreviewDimensionsText(dimensionsText);
       setActivePreviewItem(null);
 
       // Trigger download
       const a = document.createElement('a');
-      a.href = url;
+      a.href = secureUrl;
       a.download = `${settings.fileName || 'freepdfconverter'}.pdf`;
       document.body.appendChild(a);
       a.click();
@@ -379,9 +488,18 @@ export default function App() {
     if (items.length === 0) return;
     setIsConverting(true);
     try {
-      const { blob, url, totalPages, dimensionsText } = await generatePdfBlob(items, settings);
+      let { blob, url, totalPages, dimensionsText } = await generatePdfBlob(items, settings);
+      
+      URL.revokeObjectURL(url); // Don't leak original URL
+      
+      blob = await processSecurePdf(blob, settings);
+      const secureUrl = URL.createObjectURL(blob);
+
       setPreviewPdfBlob(blob);
-      setPreviewPdfUrl(url);
+      setPreviewPdfUrl(prevUrl => {
+        if (prevUrl) URL.revokeObjectURL(prevUrl);
+        return secureUrl;
+      });
       setPreviewTotalPages(totalPages);
       setPreviewDimensionsText(dimensionsText);
       setActivePreviewItem(null);
@@ -404,6 +522,8 @@ export default function App() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       showToast('Stitched full PNG image downloaded!');
     } catch (err) {
       console.error(err);
@@ -412,8 +532,8 @@ export default function App() {
   };
 
   return (
-    <div className="flex justify-center min-h-screen bg-[var(--stage)] text-[var(--ink)] sm:p-4 md:p-6">
-      <div className="editorial-sheet w-full max-w-[1600px] flex flex-col relative bg-[var(--paper)] overflow-x-clip">
+    <div className="flex justify-center min-h-screen bg-[var(--stage)] text-[var(--ink)]">
+      <div className="editorial-sheet w-full flex flex-col relative bg-[var(--paper)] overflow-x-clip !rounded-none !border-x-0 !border-t-0">
         {/* Toast Notification */}
       <AnimatePresence>
         {toastMessage && (
@@ -439,8 +559,8 @@ export default function App() {
       <main className="pt-28 pb-20 px-4 sm:px-8 md:px-12 relative z-10">
         {/* Hero Section */}
         <div className="max-w-5xl mx-auto text-center space-y-6 pt-6 relative">
-          {/* Decorative SVG Ribbon Background - Expanded to bleed across entire card */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1200px] sm:w-[1400px] xl:w-[1600px] h-[700px] z-0 pointer-events-none flex justify-center items-center opacity-80">
+          {/* Decorative SVG Ribbon Background - Bleeds across entire screen width */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[100vw] h-[700px] z-0 pointer-events-none flex justify-center items-center opacity-80">
             <svg viewBox="0 0 1600 700" className="w-full h-full" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
               <defs>
                 <filter id="glowing-blur" x="-50%" y="-50%" width="200%" height="200%">
@@ -491,10 +611,10 @@ export default function App() {
             </svg>
           </div>
 
-          <h1 className="text-4xl sm:text-6xl md:text-7xl font-bold tracking-tight text-[#151515] relative z-10">
+          <h1 className="text-4xl sm:text-6xl md:text-7xl font-serif font-normal tracking-tight text-[#151515] relative z-10">
             Continuous Image & Web <br />
             <span className="text-[#313033]">
-              to <span className="bg-[#FFFF00] px-3 mx-1 text-black inline-block">PDF</span> Studio.
+              to <span className="bg-[#FFFF00] px-3 mx-1 font-sans text-black inline-block">PDF</span> Studio.
             </span>
           </h1>
 
@@ -805,6 +925,12 @@ export default function App() {
                         setActivePreviewItem(item);
                         setPreviewOpen(true);
                       }}
+                      onCropItem={(item) => {
+                        setActiveCropItem(item);
+                        setCropOpen(true);
+                      }}
+                      onReorder={handleReorder}
+                      onApplyGlobalCrop={applyGlobalTopCrop}
                     />
                   </div>
 
@@ -838,13 +964,13 @@ export default function App() {
                   </AnimatePresence>
 
                   {/* Conversion Action Bar */}
-                  <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-[#b8b8b8]">
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-col md:flex-row flex-wrap items-stretch md:items-center justify-between gap-4 pt-4 border-t border-[#b8b8b8]">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                       <button
                         type="button"
                         onClick={handleOpenLivePreview}
                         disabled={isConverting}
-                        className="editorial-btn editorial-btn-outlined py-2.5 px-4 text-xs font-semibold border-[#aaa] text-[#151515] hover:bg-[#dedede] cursor-pointer"
+                        className="editorial-btn editorial-btn-outlined py-2.5 px-4 text-xs font-semibold border-[#aaa] text-[#151515] hover:bg-[#dedede] cursor-pointer justify-center"
                       >
                         <Eye className="w-3.5 h-3.5 text-[#313033]" />
                         Live Document Preview
@@ -853,19 +979,19 @@ export default function App() {
                       <button
                         type="button"
                         onClick={handleDownloadStitchedPng}
-                        className="editorial-btn editorial-btn-tonal py-2.5 px-4 text-xs font-semibold text-[#151515] bg-[#daf200] hover:bg-[#C2D7FA] hidden sm:inline-flex cursor-pointer"
+                        className="editorial-btn editorial-btn-tonal py-2.5 px-4 text-xs font-semibold text-[#151515] bg-[#daf200] hover:bg-[#C2D7FA] inline-flex cursor-pointer justify-center"
                       >
                         <FileImage className="w-3.5 h-3.5 text-[#313033]" />
                         Export as Long PNG
                       </button>
                     </div>
 
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                       <button
                         type="button"
                         onClick={handleExportPDF}
                         disabled={isConverting}
-                        className="editorial-btn editorial-btn-dark py-2.5 px-6 text-sm font-semibold shadow-md cursor-pointer"
+                        className="editorial-btn editorial-btn-dark py-2.5 px-6 text-sm font-semibold shadow-md cursor-pointer justify-center"
                       >
                         {isConverting ? (
                           <>
@@ -917,6 +1043,30 @@ export default function App() {
         onDownloadPdf={handleExportPDF}
         onDownloadPng={handleDownloadStitchedPng}
         singleImageItem={activePreviewItem}
+      />
+
+      <CropModal
+        isOpen={cropOpen}
+        onClose={() => {
+          setCropOpen(false);
+          setActiveCropItem(null);
+        }}
+        item={activeCropItem}
+        onSave={(id, newBlob, newPreviewUrl) => {
+          setItems(items.map(it => {
+            if (it.id === id) {
+              URL.revokeObjectURL(it.previewUrl);
+              return {
+                ...it,
+                file: new File([newBlob], it.file.name, { type: it.file.type || 'image/png' }),
+                previewUrl: newPreviewUrl,
+                size: newBlob.size
+              };
+            }
+            return it;
+          }));
+          showToast('Image cropped successfully!');
+        }}
       />
 
       {/* Footer */}
