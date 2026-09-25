@@ -10,4 +10,11 @@
     <changefreq>weekly</changefreq>
     <priority>1.00</priority>
   </url>
+  <!-- Research-grade PDF reader -->
+  <url>
+    <loc>https://freepdfconverter.com/reader</loc>
+    <lastmod>2026-09-25T00:00:00+00:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.80</priority>
+  </url>
 </urlset>

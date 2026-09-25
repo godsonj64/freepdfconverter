@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, ArrowUpRight, ShieldCheck, FileCheck } from 'lucide-react';
+import { Layers, ArrowUpRight, ShieldCheck, FileCheck, BookOpen } from 'lucide-react';
 
 interface HeaderProps {
   queueCount: number;
@@ -29,6 +29,9 @@ export const Header: React.FC<HeaderProps> = ({ queueCount, onScrollToConverter 
 
         {/* Navigation Links with Editorial text button styling */}
         <nav className="hidden md:flex items-center gap-2 text-sm font-bold text-[#474747]">
+          <a href="/reader" className="px-3.5 py-1.5 rounded-full hover:bg-[var(--soft)] hover:text-[var(--ink)] transition-colors">
+            PDF Reader
+          </a>
           <a href="#features" className="px-3.5 py-1.5 rounded-full hover:bg-[var(--soft)] hover:text-[var(--ink)] transition-colors">
             Engine Features
           </a>
@@ -51,6 +54,14 @@ export const Header: React.FC<HeaderProps> = ({ queueCount, onScrollToConverter 
               <span>{queueCount} in queue</span>
             </div>
           )}
+          <a
+            href="/reader"
+            aria-label="Open PDF Reader"
+            className="md:hidden editorial-btn editorial-btn-outlined text-xs py-2 px-3"
+          >
+            <BookOpen className="w-4 h-4" />
+            <span className="hidden sm:inline">Reader</span>
+          </a>
           <button 
             type="button"
             onClick={onScrollToConverter}
