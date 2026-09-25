@@ -37,6 +37,7 @@ import { MissionStatement } from './components/MissionStatement';
 import { Footer } from './components/Footer';
 import { ImageItem, ConversionSettings, ViewportDevice } from './types';
 import { generatePdfBlob, generateStitchedPng } from './utils/pdfEngine';
+import { applyWatermark } from './utils/watermark';
 
 export default function App() {
   const [items, setItems] = useState<ImageItem[]>([]);
@@ -410,39 +411,7 @@ export default function App() {
   // Convert & Export PDF
   const processSecurePdf = async (blob: Blob, settings: ConversionSettings) => {
     if (!settings.watermark) return blob;
-    
-    // Convert blob to base64
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        resolve(result.split(',')[1]);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-
-    const res = await fetch('/api/secure-pdf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pdfBase64: base64,
-        watermark: settings.watermark
-      })
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Failed to secure PDF: ${err}`);
-    }
-    
-    const { pdfBase64: securedBase64 } = await res.json();
-    if (!securedBase64) {
-      throw new Error('No secured base64 returned from server');
-    }
-    
-    const fetchRes = await fetch(`data:application/pdf;base64,${securedBase64}`);
-    return await fetchRes.blob();
+    return applyWatermark(blob, settings.watermark);
   };
 
   const handleExportPDF = async () => {
