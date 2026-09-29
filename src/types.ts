@@ -1,8 +1,7 @@
 export type LayoutMode = 'continuous' | 'paginated_a4' | 'paginated_letter';
 export type MarginOption = 'none' | 'compact' | 'standard';
 export type QualityOption = 'maximum' | 'high' | 'compressed';
-export type BackgroundOption = 'white' | 'transparent' | 'dark';
-export type ViewportDevice = 'desktop' | 'tablet' | 'mobile';
+export type BackgroundOption = 'white' | 'dark';
 
 export interface ImageItem {
   id: string;
@@ -23,15 +22,4 @@ export interface ConversionSettings {
   fileName: string;
   showPageNumbers: boolean;
   addTimestamp: boolean;
-  scaleMode: 'fit_width' | 'original';
-  watermark?: string;
-}
-
-export interface WebCaptureConfig {
-  url: string;
-  viewport: ViewportDevice;
-  colorScheme: 'light' | 'dark';
-  fullPage: boolean;
-  selector?: string;
-  cookieString?: string;
 }

@@ -173,7 +173,7 @@ export const FeatureShowcase: React.FC = () => {
             </div>
             <h3 className="font-bold text-lg text-[#151515] mb-2">Live Webpage Parser</h3>
             <p className="text-sm text-[#474747] leading-relaxed">
-              Render any public webpage across Desktop, Tablet, or Mobile viewports with automatic asset loading, lazy-scroll parsing, and dark mode support.
+              Capture any public webpage as one full-length image, at Desktop, Tablet, or Mobile width, in light or dark mode.
             </p>
           </div>
 
@@ -215,7 +215,9 @@ export const FeatureShowcase: React.FC = () => {
               </div>
             </div>
             <div className="h-[45%] w-full shrink-0">
-              <img 
+              <img
+                loading="lazy"
+                decoding="async"
                 src="/vecteezy_forest-mountain-and-lake-landscape-at-sunrise-and-sunset_8277940.jpg" 
                 alt="Chat Logs landscape" 
                 className="w-full h-full object-cover"
@@ -237,7 +239,9 @@ export const FeatureShowcase: React.FC = () => {
               </div>
             </div>
             <div className="h-[45%] w-full shrink-0">
-              <img 
+              <img
+                loading="lazy"
+                decoding="async"
                 src="/vecteezy_vector-red-horizontal-landscape-with-fog-forest-christmas_7162598-1.jpg" 
                 alt="Receipts landscape" 
                 className="w-full h-full object-cover"
@@ -259,7 +263,9 @@ export const FeatureShowcase: React.FC = () => {
               </div>
             </div>
             <div className="h-[45%] w-full shrink-0">
-              <img 
+              <img
+                loading="lazy"
+                decoding="async"
                 src="/vecteezy_stunning-mountain-and-lake-sunset-landscape-high-quality_48729997.jpg" 
                 alt="Research landscape" 
                 className="w-full h-full object-cover"
@@ -281,7 +287,9 @@ export const FeatureShowcase: React.FC = () => {
               </div>
             </div>
             <div className="h-[45%] w-full shrink-0">
-              <img 
+              <img
+                loading="lazy"
+                decoding="async"
                 src="/vecteezy_breathtaking-snowy-mountain-range-illuminated-by-the-sun_48936116.jpg" 
                 alt="Design Mockups landscape" 
                 className="w-full h-full object-cover"

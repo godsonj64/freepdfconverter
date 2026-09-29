@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sliders, FileText, Layout, Maximize2, Hash, Clock, FileCode, Check, Lock, ShieldCheck } from 'lucide-react';
+import { Sliders, FileText, Layout, Maximize2, Hash, Clock, FileCode, Check } from 'lucide-react';
 import { ConversionSettings, LayoutMode, MarginOption, QualityOption } from '../types';
 
 interface SettingsPanelProps {
@@ -135,23 +135,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
                 </button>
               );
             })}
-          </div>
-        </div>
-
-        {/* Security & Watermark */}
-        <div className="space-y-3">
-          <label className="text-xs font-semibold text-[#151515] flex items-center gap-1.5 mb-1.5">
-            <Lock className="w-3.5 h-3.5 text-[#313033]" />
-            Security & Watermarking
-          </label>
-          <div className="flex flex-col gap-3">
-            <input
-              type="text"
-              placeholder="Watermark Text (Optional)"
-              value={settings.watermark || ''}
-              onChange={(e) => updateSetting('watermark', e.target.value)}
-              className="editorial-input text-xs rounded-xl border-[#aaa] focus:border-[#0B57D0] w-full"
-            />
           </div>
         </div>
 

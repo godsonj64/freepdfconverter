@@ -22,7 +22,9 @@ export const MissionStatement: React.FC = () => {
       </div>
 
       <div className="w-full mt-auto">
-        <img 
+        <img
+          loading="lazy"
+          decoding="async"
           src="/vecteezy_teamwork-or-team-building-office-business-meeting-vector_4154417.jpg" 
           alt="Axiomatic Research Teamwork" 
           className="w-full h-auto max-h-[300px] sm:max-h-[400px] object-cover object-top"

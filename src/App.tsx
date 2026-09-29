@@ -3,53 +3,78 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
-import { 
-  Upload, 
-  ArrowRight, 
-  Layers, 
-  X, 
-  Loader2, 
-  Globe, 
-  Link as LinkIcon, 
-  Eye, 
-  CheckCircle2, 
-  SlidersHorizontal, 
-  Laptop, 
-  Tablet, 
-  Smartphone, 
-  Sun, 
-  Moon, 
-  Download, 
-  FileImage, 
+import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
+import {
+  Upload,
+  ArrowRight,
+  Layers,
+  Loader2,
+  Globe,
+  Link as LinkIcon,
+  Eye,
+  CheckCircle2,
+  AlertCircle,
+  SlidersHorizontal,
+  Laptop,
+  Tablet,
+  Smartphone,
+  Sun,
+  Moon,
+  Download,
+  FileImage,
   Plus,
-  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Header } from './components/Header';
 import { QueueManager } from './components/QueueManager';
 import { SettingsPanel } from './components/SettingsPanel';
-import { PreviewModal } from './components/PreviewModal';
-import { CropModal } from './components/CropModal';
 import { FeatureShowcase } from './components/FeatureShowcase';
 import { FAQSection } from './components/FAQSection';
 import { MissionStatement } from './components/MissionStatement';
 import { Footer } from './components/Footer';
-import { ImageItem, ConversionSettings, ViewportDevice } from './types';
-import { generatePdfBlob, generateStitchedPng } from './utils/pdfEngine';
+import { ImageItem, ConversionSettings } from './types';
+import { bakeItemEdit, downloadBlob, generateStitchedPng, loadImage } from './utils/imageOps';
+import { isSupportedImage, sanitizeFileName, SUPPORTED_MIME_TYPES } from './utils/layout';
+import { captureWebsite, normalizeCaptureUrl, ColorScheme, ViewportDevice } from './utils/webCapture';
+
+// The PDF viewer, cropper and PDF writer are large; load them only when used.
+const PreviewModal = lazy(() => import('./components/PreviewModal').then((m) => ({ default: m.PreviewModal })));
+const CropModal = lazy(() => import('./components/CropModal').then((m) => ({ default: m.CropModal })));
+const loadPdfEngine = () => import('./utils/pdfEngine');
+
+type Busy = null | 'pdf' | 'preview' | 'png' | 'crop';
+type Toast = { id: number; message: string; tone: 'success' | 'error' };
+
+const CAPTURE_TIMEOUT_MS = 90_000;
+
+function makeId(name: string) {
+  const rand = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+  return `${name}-${rand}`;
+}
+
+function hasFiles(e: DragEvent) {
+  return !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
 
 export default function App() {
   const [items, setItems] = useState<ImageItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [isConverting, setIsConverting] = useState(false);
+  const [busy, setBusy] = useState<Busy>(null);
   const [activeTab, setActiveTab] = useState<'upload' | 'url'>('upload');
-  
+
   // URL capture states
   const [urlInput, setUrlInput] = useState('');
   const [viewport, setViewport] = useState<ViewportDevice>('desktop');
-  const [colorScheme, setColorScheme] = useState<'light' | 'dark'>('light');
+  const [colorScheme, setColorScheme] = useState<ColorScheme>('light');
   const [isCapturing, setIsCapturing] = useState(false);
   const [captureStatus, setCaptureStatus] = useState('');
+  const [captureError, setCaptureError] = useState<string | null>(null);
 
   // Settings
   const [showSettings, setShowSettings] = useState(false);
@@ -61,49 +86,40 @@ export default function App() {
     fileName: 'freepdfconverter-document',
     showPageNumbers: false,
     addTimestamp: false,
-    scaleMode: 'fit_width',
   });
 
   // Modal states
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewPdfUrl, setPreviewPdfUrl] = useState<string | null>(null);
-  const [previewPdfBlob, setPreviewPdfBlob] = useState<Blob | null>(null);
-  const [previewDimensionsText, setPreviewDimensionsText] = useState('');
-  const [previewTotalPages, setPreviewTotalPages] = useState(1);
+  const [previewPdf, setPreviewPdf] = useState<{ blob: Blob; url: string; dimensionsText: string } | null>(null);
   const [activePreviewItem, setActivePreviewItem] = useState<ImageItem | null>(null);
-
-  const [cropOpen, setCropOpen] = useState(false);
   const [activeCropItem, setActiveCropItem] = useState<ImageItem | null>(null);
 
-  // Toast notification
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage((prev) => (prev === msg ? null : prev));
-    }, 3500);
-  };
+  const showToast = useCallback((message: string, tone: Toast['tone'] = 'success') => {
+    const id = Date.now() + Math.random();
+    setToast({ id, message, tone });
+    setTimeout(() => setToast((prev) => (prev?.id === id ? null : prev)), tone === 'error' ? 6000 : 3500);
+  }, []);
 
-  // Helper to load file as ImageItem with dimensions
-  const processFilesToItems = async (filesList: File[]) => {
-    const validFiles = filesList.filter((file) =>
-      ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/svg+xml', 'image/bmp'].includes(file.type) ||
-      file.name.match(/\.(png|jpe?g|webp|gif|svg|bmp)$/i)
-    );
+  const pdfFileName = `${sanitizeFileName(settings.fileName)}.pdf`;
+  const pngFileName = `${sanitizeFileName(settings.fileName)}-stitched.png`;
 
-    if (validFiles.length === 0) return;
-
-    const newItems: ImageItem[] = await Promise.all(
-      validFiles.map((file) => {
-        return new Promise<ImageItem>((resolve) => {
+  // Reads files into queue items. Unsupported or undecodable files are reported, not silently dropped.
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const supported = files.filter(isSupportedImage);
+      const loaded = await Promise.all(
+        supported.map(async (file): Promise<ImageItem | null> => {
           const previewUrl = URL.createObjectURL(file);
-          const img = new Image();
-          img.onload = () => {
-            resolve({
-              id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          try {
+            const img = await loadImage(previewUrl);
+            return {
+              id: makeId(file.name),
               file,
               previewUrl,
               name: file.name,
@@ -111,145 +127,133 @@ export default function App() {
               width: img.naturalWidth || 1200,
               height: img.naturalHeight || 800,
               rotation: 0,
-            });
-          };
-          img.onerror = () => {
-            resolve({
-              id: `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-              file,
-              previewUrl,
-              name: file.name,
-              size: file.size,
-              width: 1200,
-              height: 800,
-              rotation: 0,
-            });
-          };
-          img.src = previewUrl;
-        });
-      })
-    );
-
-    setItems((prev) => [...prev, ...newItems]);
-    showToast(`Added ${newItems.length} image${newItems.length !== 1 ? 's' : ''} to queue`);
-  };
-
-  // Global Clipboard Paste Listener (Ctrl+V / Cmd+V)
-  useEffect(() => {
-    const handlePaste = async (e: ClipboardEvent) => {
-      if (!e.clipboardData) return;
-      const itemsArr = Array.from(e.clipboardData.items);
-      const imageFiles: File[] = [];
-
-      for (const item of itemsArr) {
-        if (item.type.startsWith('image/')) {
-          const blob = item.getAsFile();
-          if (blob) {
-            const pastedFile = new File(
-              [blob],
-              `clipboard-screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
-              { type: blob.type || 'image/png' }
-            );
-            imageFiles.push(pastedFile);
+            };
+          } catch {
+            URL.revokeObjectURL(previewUrl);
+            return null;
           }
-        }
-      }
+        })
+      );
+      const added = loaded.filter((item): item is ImageItem => item !== null);
+      const rejected = files.length - added.length;
 
+      if (added.length > 0) setItems((prev) => [...prev, ...added]);
+
+      if (added.length > 0 && rejected === 0) {
+        showToast(`Added ${added.length} image${added.length !== 1 ? 's' : ''} to queue`);
+      } else if (added.length > 0) {
+        showToast(`Added ${added.length}, skipped ${rejected} file${rejected !== 1 ? 's' : ''} that aren't supported images`, 'error');
+      } else {
+        showToast('Those files are not supported. Use PNG, JPG, WebP, GIF, SVG or BMP images.', 'error');
+      }
+    },
+    [showToast]
+  );
+
+  // Paste (Ctrl+V / Cmd+V) and drag & drop anywhere on the page.
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (!e.clipboardData) return;
+      const target = e.target as HTMLElement | null;
+      const imageFiles: File[] = [];
+      for (const item of Array.from(e.clipboardData.items)) {
+        if (!item.type.startsWith('image/')) continue;
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        const ext = blob.type.split('/')[1]?.replace('jpeg', 'jpg').replace('svg+xml', 'svg') || 'png';
+        imageFiles.push(
+          new File([blob], `clipboard-screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}`, {
+            type: blob.type || 'image/png',
+          })
+        );
+      }
+      // Let text paste into inputs work normally.
+      if (imageFiles.length === 0 && target?.closest('input, textarea')) return;
       if (imageFiles.length > 0) {
         e.preventDefault();
-        await processFilesToItems(imageFiles);
+        setActiveTab('upload');
+        void addFiles(imageFiles);
+      }
+    };
+
+    // Without these, dropping a file outside the drop zone makes the browser
+    // navigate to the image and throw the whole queue away.
+    const handleDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragDepth.current += 1;
+      setIsDragging(true);
+    };
+    const handleDragOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    const handleDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setIsDragging(false);
+    };
+    const handleDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0;
+      setIsDragging(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length > 0) {
+        setActiveTab('upload');
+        void addFiles(files);
       }
     };
 
     window.addEventListener('paste', handlePaste);
-    return () => window.removeEventListener('paste', handlePaste);
-  }, []);
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      await processFilesToItems(Array.from(e.dataTransfer.files));
-    }
-  };
+    window.addEventListener('dragenter', handleDragEnter);
+    window.addEventListener('dragover', handleDragOver);
+    window.addEventListener('dragleave', handleDragLeave);
+    window.addEventListener('drop', handleDrop);
+    return () => {
+      window.removeEventListener('paste', handlePaste);
+      window.removeEventListener('dragenter', handleDragEnter);
+      window.removeEventListener('dragover', handleDragOver);
+      window.removeEventListener('dragleave', handleDragLeave);
+      window.removeEventListener('drop', handleDrop);
+    };
+  }, [addFiles]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      await processFilesToItems(Array.from(e.target.files));
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    await addFiles(files);
   };
 
-  // Global crop tool
+  const replaceItem = (id: string, patch: Partial<ImageItem>) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== id) return it;
+        if (patch.previewUrl && patch.previewUrl !== it.previewUrl) URL.revokeObjectURL(it.previewUrl);
+        return { ...it, ...patch };
+      })
+    );
+  };
+
+  // Global crop tool: trims the top of every image as it appears on screen (rotation included).
   const applyGlobalTopCrop = async (cropPercentage: number) => {
-    if (cropPercentage <= 0) return;
-    setIsConverting(true);
-    const factor = cropPercentage / 100;
-    
+    if (cropPercentage <= 0 || items.length === 0) return;
+    setBusy('crop');
     try {
-      const newItems = await Promise.all(items.map((item) => {
-        return new Promise<ImageItem>((resolve) => {
-          const img = new Image();
-          img.onload = () => {
-            const cropPixels = Math.floor(img.naturalHeight * factor);
-            const newHeight = img.naturalHeight - cropPixels;
-            
-            const canvas = document.createElement('canvas');
-            canvas.width = img.naturalWidth;
-            canvas.height = newHeight;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) return resolve(item);
-
-            ctx.drawImage(
-              img,
-              0, cropPixels, img.naturalWidth, newHeight,
-              0, 0, img.naturalWidth, newHeight
-            );
-
-            canvas.toBlob((blob) => {
-              if (!blob) return resolve(item);
-              const newFile = new File([blob], item.file.name, { type: item.file.type || 'image/png' });
-              const newPreviewUrl = URL.createObjectURL(blob);
-              
-              URL.revokeObjectURL(item.previewUrl);
-              
-              resolve({
-                ...item,
-                file: newFile,
-                previewUrl: newPreviewUrl,
-                height: newHeight,
-                size: blob.size
-              });
-            }, item.file.type || 'image/png', 1);
-          };
-          img.onerror = () => resolve(item);
-          img.src = item.previewUrl;
-        });
-      }));
-      setItems(newItems);
-      showToast(`Cropped top ${cropPercentage}% off all images!`);
+      for (const item of items) {
+        const edit = await bakeItemEdit(item, { x: 0, y: cropPercentage, width: 100, height: 100 - cropPercentage });
+        replaceItem(item.id, edit);
+      }
+      showToast(`Cropped the top ${cropPercentage}% off all images`);
     } catch (err) {
       console.error(err);
-      alert('Failed to crop images.');
+      showToast(errorMessage(err, 'Failed to crop images.'), 'error');
     } finally {
-      setIsConverting(false);
+      setBusy(null);
     }
   };
 
   // Queue manipulation functions
-  const handleReorder = (newItems: ImageItem[]) => {
-    setItems(newItems);
-  };
-
   const removeItem = (id: string) => {
     setItems((prev) => {
       const itemToRemove = prev.find((i) => i.id === id);
@@ -258,41 +262,36 @@ export default function App() {
     });
   };
 
-  const moveItemUp = (index: number) => {
-    if (index === 0) return;
+  const moveItem = (index: number, delta: -1 | 1) => {
     setItems((prev) => {
+      const target = index + delta;
+      if (target < 0 || target >= prev.length) return prev;
       const copy = [...prev];
-      [copy[index - 1], copy[index]] = [copy[index], copy[index - 1]];
-      return copy;
-    });
-  };
-
-  const moveItemDown = (index: number) => {
-    if (index === items.length - 1) return;
-    setItems((prev) => {
-      const copy = [...prev];
-      [copy[index + 1], copy[index]] = [copy[index], copy[index + 1]];
+      [copy[index], copy[target]] = [copy[target], copy[index]];
       return copy;
     });
   };
 
   const rotateItem = (id: string) => {
     setItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, rotation: (item.rotation + 90) % 360 } : item
-      )
+      prev.map((item) => (item.id === id ? { ...item, rotation: (item.rotation + 90) % 360 } : item))
     );
   };
 
   const duplicateItem = (id: string) => {
-    const item = items.find((i) => i.id === id);
-    if (!item) return;
-    const duplicated: ImageItem = {
-      ...item,
-      id: `${item.name}-copy-${Date.now()}`,
-      name: `${item.name.replace(/\.[^/.]+$/, '')} (Copy)`,
-    };
-    setItems((prev) => [...prev, duplicated]);
+    setItems((prev) => {
+      const index = prev.findIndex((i) => i.id === id);
+      if (index === -1) return prev;
+      const item = prev[index];
+      // Each copy needs its own object URL: removing or cropping one revokes its URL.
+      const duplicated: ImageItem = {
+        ...item,
+        id: makeId(item.name),
+        previewUrl: URL.createObjectURL(item.file),
+        name: item.name.replace(/(\.[^./]+)?$/, ' (copy)$1'),
+      };
+      return [...prev.slice(0, index + 1), duplicated, ...prev.slice(index + 1)];
+    });
     showToast('Duplicated image');
   };
 
@@ -309,50 +308,32 @@ export default function App() {
 
   // Web capture handler
   const handleCaptureUrl = async (presetUrl?: string) => {
-    const targetUrl = presetUrl || urlInput;
-    if (!targetUrl) return;
-
-    let cleanUrl = targetUrl.trim();
-    if (!/^https?:\/\//i.test(cleanUrl)) {
-      cleanUrl = 'https://' + cleanUrl;
+    if (isCapturing) return;
+    const cleanUrl = normalizeCaptureUrl(presetUrl ?? urlInput);
+    if (!cleanUrl) {
+      setCaptureError('Enter a public website address, for example https://example.com');
+      return;
     }
 
     setIsCapturing(true);
-    setCaptureStatus('Initializing browser engine...');
+    setCaptureError(null);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
 
     try {
-      setCaptureStatus('Rendering webpage assets & fonts...');
-      const res = await fetch('/api/screenshot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: cleanUrl,
-          viewport,
-          colorScheme,
-          fullPage: true,
-        }),
+      const file = await captureWebsite(cleanUrl, viewport, colorScheme, {
+        signal: controller.signal,
+        onStatus: setCaptureStatus,
       });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(errorText || 'Failed to capture screenshot');
-      }
-
-      setCaptureStatus('Processing screenshot image...');
-      const blob = await res.blob();
-      const hostname = new URL(cleanUrl).hostname.replace('www.', '');
-      const capturedFile = new File([blob], `${hostname}-fullpage-${viewport}.png`, {
-        type: 'image/png',
-      });
-
-      await processFilesToItems([capturedFile]);
+      await addFiles([file]);
       setUrlInput('');
       setActiveTab('upload');
-      showToast(`Captured full-page screenshot of ${hostname}!`);
-    } catch (error: any) {
+      showToast(`Captured ${new URL(cleanUrl).hostname.replace(/^www\./, '')}`);
+    } catch (error) {
       console.error(error);
-      alert(`Could not capture ${cleanUrl}. Error: ${error.message || 'Please check the URL.'}`);
+      setCaptureError(errorMessage(error, 'Could not capture that page.'));
     } finally {
+      clearTimeout(timer);
       setIsCapturing(false);
       setCaptureStatus('');
     }
@@ -366,6 +347,12 @@ export default function App() {
       c.height = height;
       const ctx = c.getContext('2d');
       if (ctx) {
+        const card = (x: number, y: number, w: number, h: number, r: number) => {
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+          else ctx.rect(x, y, w, h);
+          ctx.fill();
+        };
         const grad = ctx.createLinearGradient(0, 0, 1200, height);
         grad.addColorStop(0, color1);
         grad.addColorStop(1, color2);
@@ -373,8 +360,7 @@ export default function App() {
         ctx.fillRect(0, 0, 1200, height);
 
         ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
-        ctx.roundRect ? ctx.roundRect(80, 60, 1040, 120, 24) : ctx.fillRect(80, 60, 1040, 120);
-        ctx.fill();
+        card(80, 60, 1040, 120, 24);
 
         ctx.fillStyle = '#041E49';
         ctx.font = 'bold 36px Roboto, sans-serif';
@@ -382,8 +368,7 @@ export default function App() {
 
         for (let y = 220; y < height - 100; y += 180) {
           ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
-          ctx.roundRect ? ctx.roundRect(80, y, 1040, 140, 20) : ctx.fillRect(80, y, 1040, 140);
-          ctx.fill();
+          card(80, y, 1040, 140, 20);
 
           ctx.fillStyle = '#1F1F1F';
           ctx.font = '22px Roboto, sans-serif';
@@ -393,167 +378,120 @@ export default function App() {
           ctx.fillText('Timestamp: 10:42 AM • Status: Complete • Hash #8492048', 120, y + 100);
         }
       }
-      return new Promise<Blob>((resolve) => {
-        c.toBlob((blob) => resolve(blob!), 'image/png');
-      });
+      return new Promise<Blob | null>((resolve) => c.toBlob(resolve, 'image/png'));
     };
 
     const blob1 = await createSampleCanvas('Order Summary & Invoice #4092', '#313033', '#474747', 1000);
     const blob2 = await createSampleCanvas('Customer Chat Transcript & Notes', '#313033', '#daf200', 1200);
+    if (!blob1 || !blob2) {
+      showToast('Could not create the demo images in this browser.', 'error');
+      return;
+    }
 
-    const file1 = new File([blob1], 'sample-invoice-part1.png', { type: 'image/png' });
-    const file2 = new File([blob2], 'sample-chat-transcript.png', { type: 'image/png' });
+    setActiveTab('upload');
+    await addFiles([
+      new File([blob1], 'sample-invoice-part1.png', { type: 'image/png' }),
+      new File([blob2], 'sample-chat-transcript.png', { type: 'image/png' }),
+    ]);
+    document.getElementById('converter')?.scrollIntoView({ behavior: 'smooth' });
+  };
 
-    await processFilesToItems([file1, file2]);
+  const buildPdf = async () => {
+    const { generatePdfBlob } = await loadPdfEngine();
+    return generatePdfBlob(items, settings);
   };
 
   // Convert & Export PDF
-  const processSecurePdf = async (blob: Blob, settings: ConversionSettings) => {
-    if (!settings.watermark) return blob;
-    
-    // Convert blob to base64
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        resolve(result.split(',')[1]);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-
-    const res = await fetch('/api/secure-pdf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pdfBase64: base64,
-        watermark: settings.watermark
-      })
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Failed to secure PDF: ${err}`);
-    }
-    
-    const { pdfBase64: securedBase64 } = await res.json();
-    if (!securedBase64) {
-      throw new Error('No secured base64 returned from server');
-    }
-    
-    const fetchRes = await fetch(`data:application/pdf;base64,${securedBase64}`);
-    return await fetchRes.blob();
-  };
-
   const handleExportPDF = async () => {
-    if (items.length === 0) return;
-    setIsConverting(true);
-
+    if (items.length === 0 || busy) return;
+    setBusy('pdf');
     try {
-      let { blob, url, totalPages, dimensionsText } = await generatePdfBlob(items, settings);
-      
-      URL.revokeObjectURL(url); // Don't leak original URL
-      
-      blob = await processSecurePdf(blob, settings);
-      const secureUrl = URL.createObjectURL(blob);
-      
-      setPreviewPdfBlob(blob);
-      setPreviewPdfUrl(prevUrl => {
-        if (prevUrl) URL.revokeObjectURL(prevUrl);
-        return secureUrl;
-      });
-      setPreviewTotalPages(totalPages);
-      setPreviewDimensionsText(dimensionsText);
-      setActivePreviewItem(null);
-
-      // Trigger download
-      const a = document.createElement('a');
-      a.href = secureUrl;
-      a.download = `${settings.fileName || 'freepdfconverter'}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-
-      showToast('PDF successfully compiled and downloaded!');
+      const { blob } = await buildPdf();
+      downloadBlob(blob, pdfFileName);
+      showToast('PDF compiled and downloaded');
     } catch (error) {
       console.error('Error generating PDF:', error);
-      alert('Failed to generate PDF. Please check your images and try again.');
+      showToast(errorMessage(error, 'Failed to generate the PDF. Please check your images and try again.'), 'error');
     } finally {
-      setIsConverting(false);
+      setBusy(null);
     }
   };
 
   // Open Live Preview Modal
   const handleOpenLivePreview = async () => {
-    if (items.length === 0) return;
-    setIsConverting(true);
+    if (items.length === 0 || busy) return;
+    setBusy('preview');
     try {
-      let { blob, url, totalPages, dimensionsText } = await generatePdfBlob(items, settings);
-      
-      URL.revokeObjectURL(url); // Don't leak original URL
-      
-      blob = await processSecurePdf(blob, settings);
-      const secureUrl = URL.createObjectURL(blob);
-
-      setPreviewPdfBlob(blob);
-      setPreviewPdfUrl(prevUrl => {
-        if (prevUrl) URL.revokeObjectURL(prevUrl);
-        return secureUrl;
+      const { blob, dimensionsText } = await buildPdf();
+      const url = URL.createObjectURL(blob);
+      setPreviewPdf((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return { blob, url, dimensionsText };
       });
-      setPreviewTotalPages(totalPages);
-      setPreviewDimensionsText(dimensionsText);
       setActivePreviewItem(null);
       setPreviewOpen(true);
     } catch (err) {
       console.error(err);
+      showToast(errorMessage(err, 'Could not build the preview.'), 'error');
     } finally {
-      setIsConverting(false);
+      setBusy(null);
     }
   };
 
   // Download Stitched PNG
   const handleDownloadStitchedPng = async () => {
-    if (items.length === 0) return;
+    if (items.length === 0 || busy) return;
+    setBusy('png');
     try {
-      const { url } = await generateStitchedPng(items);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${settings.fileName || 'freepdfconverter'}-stitched.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      showToast('Stitched full PNG image downloaded!');
+      const blob = await generateStitchedPng(items);
+      downloadBlob(blob, pngFileName);
+      showToast('Stitched PNG downloaded');
     } catch (err) {
       console.error(err);
-      alert('Could not generate stitched PNG.');
+      showToast(errorMessage(err, 'Could not generate the stitched PNG.'), 'error');
+    } finally {
+      setBusy(null);
     }
   };
+
+  const scrollToConverter = () => document.getElementById('converter')?.scrollIntoView({ behavior: 'smooth' });
 
   return (
     <div className="flex justify-center min-h-screen bg-[var(--stage)] text-[var(--ink)]">
       <div className="editorial-sheet w-full flex flex-col relative bg-[var(--paper)] overflow-x-clip !rounded-none !border-x-0 !border-t-0">
         {/* Toast Notification */}
       <AnimatePresence>
-        {toastMessage && (
+        {toast && (
           <motion.div
+            key={toast.id}
+            role="status"
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-[#1F1F1F] text-[#F8FAFD] px-5 py-3 rounded-full text-xs font-semibold shadow-lg flex items-center gap-2"
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] w-max max-w-[calc(100vw-2rem)] bg-[#1F1F1F] text-[#F8FAFD] px-5 py-3 rounded-2xl text-xs font-semibold shadow-lg flex items-center gap-2"
           >
-            <CheckCircle2 className="w-4 h-4 text-[#C4EED0]" />
-            <span>{toastMessage}</span>
+            {toast.tone === 'error' ? (
+              <AlertCircle className="w-4 h-4 shrink-0 text-[#ff8a80]" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-[#C4EED0]" />
+            )}
+            <span>{toast.message}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
+      {/* Full-page drop target while files are dragged over the window */}
+      {isDragging && (
+        <div className="fixed inset-0 z-[55] pointer-events-none bg-[#daf200]/20 border-4 border-dashed border-[#313033] flex items-center justify-center">
+          <div className="bg-[#1F1F1F] text-white text-sm font-bold px-6 py-3 rounded-full shadow-lg flex items-center gap-2">
+            <Upload className="w-4 h-4" />
+            Drop images to add them to the queue
+          </div>
+        </div>
+      )}
+
       {/* Navigation Header */}
-      <Header 
-        queueCount={items.length} 
-        onScrollToConverter={() => document.getElementById('converter')?.scrollIntoView({ behavior: 'smooth' })} 
-      />
+      <Header queueCount={items.length} onScrollToConverter={scrollToConverter} />
 
       {/* Main Container */}
       <main className="pt-28 pb-20 px-4 sm:px-8 md:px-12 relative z-10">
@@ -622,15 +560,17 @@ export default function App() {
             Stitch scrolling screenshots, chats, receipts, and live websites into one unbroken, continuous PDF document. No arbitrary page breaks slicing your content in half.
           </p>
 
-          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2 relative z-10">
             <button
-              onClick={() => document.getElementById('converter')?.scrollIntoView({ behavior: 'smooth' })}
+              type="button"
+              onClick={scrollToConverter}
               className="editorial-btn editorial-btn-dark px-6 py-3 text-sm shadow-md cursor-pointer"
             >
               Start Converting
               <ArrowRight className="w-4 h-4" />
             </button>
             <button
+              type="button"
               onClick={loadDemoSamples}
               className="editorial-btn editorial-btn-outlined px-5 py-3 text-sm border-[#aaa] text-[#151515] hover:bg-[#dedede] cursor-pointer"
             >
@@ -639,16 +579,23 @@ export default function App() {
           </div>
 
           {/* Quick Shortcuts Bar */}
-          <div className="flex flex-wrap items-center justify-center gap-4 text-xs text-[#474747] pt-3">
+          <div className="flex flex-wrap items-center justify-center gap-4 text-xs text-[#474747] pt-3 relative z-10">
             <span className="inline-flex items-center gap-1.5">
               <kbd className="px-2 py-0.5 bg-[#dedede] border border-[#aaa] rounded-md text-[11px] font-mono text-[#151515]">Ctrl+V</kbd>
               <span>to Paste Screenshots</span>
             </span>
             <span>•</span>
-            <span className="inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('url');
+                scrollToConverter();
+              }}
+              className="inline-flex items-center gap-1.5 hover:underline cursor-pointer"
+            >
               <Globe className="w-3.5 h-3.5 text-[#313033]" />
               <span>Full Webpage Capture</span>
-            </span>
+            </button>
             <span>•</span>
             <span className="inline-flex items-center gap-1.5">
               <FileImage className="w-3.5 h-3.5 text-[#313033]" />
@@ -678,10 +625,10 @@ export default function App() {
         </div>
 
         {/* Converter Main Studio Applet */}
-        <div id="converter" className="max-w-6xl w-full mx-auto mt-8">
+        <div id="converter" className="max-w-6xl w-full mx-auto mt-8 scroll-mt-24">
           <div className="bg-[#f4f4f1] border border-[#b8b8b8] rounded-2xl sm:rounded-3xl shadow-[0_8px_30px_rgba(0,0,0,0.06)] overflow-hidden">
             {/* Top Bar with Tabs */}
-            <div className="px-6 py-5 bg-[#f4f4f1] border-b border-[#b8b8b8] flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="px-4 sm:px-6 py-5 bg-[#f4f4f1] border-b border-[#b8b8b8] flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-2.5 font-semibold text-[#151515] text-sm">
                 <div className="w-8 h-8 rounded-xl bg-[#daf200] text-[#313033] flex items-center justify-center shadow-xs">
                   <Layers className="w-4 h-4" />
@@ -690,9 +637,11 @@ export default function App() {
               </div>
 
               {/* Segmented Control */}
-              <div className="editorial-segmented max-w-full overflow-x-auto whitespace-nowrap hide-scrollbar">
+              <div className="editorial-segmented max-w-full overflow-x-auto whitespace-nowrap hide-scrollbar" role="tablist">
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'upload'}
                   onClick={() => setActiveTab('upload')}
                   className={`editorial-segmented-item ${activeTab === 'upload' ? 'active' : ''}`}
                 >
@@ -700,6 +649,8 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={activeTab === 'url'}
                   onClick={() => setActiveTab('url')}
                   className={`editorial-segmented-item ${activeTab === 'url' ? 'active' : ''}`}
                 >
@@ -709,26 +660,27 @@ export default function App() {
             </div>
 
             {/* Main Content Area */}
-            <div className="p-6 sm:p-8">
+            <div className="p-3 sm:p-8">
               <input
                 type="file"
                 multiple
-                accept="image/png, image/jpeg, image/jpg, image/webp, image/gif, image/svg+xml, image/bmp"
+                accept={SUPPORTED_MIME_TYPES.join(',')}
                 className="hidden"
                 ref={fileInputRef}
                 onChange={handleFileChange}
+                data-testid="file-input"
               />
 
               {/* TAB 1: WEBSITE URL CAPTURE */}
               {activeTab === 'url' ? (
-                <div className="bg-[#f4f4f1] rounded-2xl border border-[#b8b8b8] p-6 sm:p-8 space-y-6">
+                <div className="bg-[#f4f4f1] rounded-2xl border border-[#b8b8b8] p-5 sm:p-8 space-y-6">
                   <div className="max-w-md mx-auto text-center space-y-2">
                     <div className="w-12 h-12 rounded-2xl bg-[#daf200] text-[#313033] flex items-center justify-center mx-auto mb-3 shadow-xs">
                       <Globe className="w-6 h-6" />
                     </div>
                     <h3 className="text-xl font-bold text-[#151515]">Capture Live Website</h3>
                     <p className="text-xs text-[#474747] leading-relaxed">
-                      Enter any public URL. Our headless engine will auto-scroll through lazy-loaded images and generate a crisp full-page PNG ready for stitching.
+                      Enter any public URL and we'll render the whole page as one crisp, full-length PNG ready for stitching.
                     </p>
                   </div>
 
@@ -782,23 +734,35 @@ export default function App() {
                   </div>
 
                   {/* URL Input Form */}
-                  <div className="max-w-xl mx-auto flex flex-col sm:flex-row items-center gap-2">
+                  <form
+                    className="max-w-xl mx-auto flex flex-col sm:flex-row items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleCaptureUrl();
+                    }}
+                  >
                     <div className="relative w-full flex-1">
                       <LinkIcon className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#666666]" />
                       <input
-                        type="url"
+                        type="text"
+                        inputMode="url"
+                        autoComplete="url"
+                        aria-label="Website address"
                         placeholder="https://news.ycombinator.com"
                         value={urlInput}
-                        onChange={(e) => setUrlInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleCaptureUrl()}
-                        className="editorial-input pl-10 text-sm rounded-xl border-[#aaa] focus:border-[#0B57D0]"
+                        onChange={(e) => {
+                          setUrlInput(e.target.value);
+                          setCaptureError(null);
+                        }}
+                        // .editorial-input's own padding outranks Tailwind's pl-*, so clear the icon inline.
+                        style={{ paddingLeft: '2.5rem' }}
+                        className="editorial-input text-sm rounded-xl border-[#aaa] focus:border-[#0B57D0]"
                       />
                     </div>
                     <button
-                      type="button"
-                      onClick={() => handleCaptureUrl()}
-                      disabled={isCapturing || !urlInput}
-                      className="editorial-btn editorial-btn-dark py-2.5 px-5 text-sm h-11 w-full sm:w-auto cursor-pointer"
+                      type="submit"
+                      disabled={isCapturing || !urlInput.trim()}
+                      className="editorial-btn editorial-btn-dark py-2.5 px-5 text-sm h-11 w-full sm:w-auto cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isCapturing ? (
                         <>
@@ -812,7 +776,7 @@ export default function App() {
                         </>
                       )}
                     </button>
-                  </div>
+                  </form>
 
                   {/* Capturing Progress Indicator */}
                   {isCapturing && (
@@ -821,6 +785,14 @@ export default function App() {
                       <div className="w-48 h-1 bg-[#daf200] rounded-full overflow-hidden mx-auto">
                         <div className="w-full h-full bg-[#313033] animate-pulse" />
                       </div>
+                      <p className="text-[11px] text-[#666666]">Long pages can take up to a minute.</p>
+                    </div>
+                  )}
+
+                  {captureError && !isCapturing && (
+                    <div role="alert" className="max-w-xl mx-auto flex items-start gap-2 text-xs text-[#b71c1c] bg-[#ffcdd2]/40 border border-[#ffcdd2] rounded-xl px-4 py-3">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-px" />
+                      <span>{captureError}</span>
                     </div>
                   )}
 
@@ -835,16 +807,21 @@ export default function App() {
                       <button
                         key={preset.name}
                         type="button"
+                        disabled={isCapturing}
                         onClick={() => {
                           setUrlInput(preset.url);
-                          handleCaptureUrl(preset.url);
+                          void handleCaptureUrl(preset.url);
                         }}
-                        className="editorial-chip hover:border-[#0B57D0] hover:text-[#313033] transition-colors cursor-pointer"
+                        className="editorial-chip hover:border-[#0B57D0] hover:text-[#313033] transition-colors cursor-pointer disabled:opacity-50"
                       >
                         {preset.name}
                       </button>
                     ))}
                   </div>
+
+                  <p className="text-[11px] text-[#666666] text-center max-w-md mx-auto leading-relaxed">
+                    Pages are rendered by the free <a href="https://microlink.io" target="_blank" rel="noreferrer" className="underline">Microlink</a> screenshot service, so the address you enter is sent to them. Your uploaded images never leave your device.
+                  </p>
 
                   {items.length > 0 && (
                     <div className="text-center pt-2">
@@ -861,10 +838,7 @@ export default function App() {
               ) : items.length === 0 ? (
                 /* TAB 2: EMPTY DROPZONE */
                 <div
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  className={`relative rounded-2xl sm:rounded-3xl border-2 border-dashed transition-all duration-200 flex flex-col items-center justify-center p-10 text-center min-h-[300px] ${
+                  className={`relative rounded-2xl sm:rounded-3xl border-2 border-dashed transition-all duration-200 flex flex-col items-center justify-center p-6 sm:p-10 text-center min-h-[300px] ${
                     isDragging
                       ? 'border-[#0B57D0] bg-[#daf200]/20 scale-[1.01]'
                       : 'border-[#aaa] bg-[#f4f4f1] hover:border-[#0B57D0] hover:bg-[#dedede]'
@@ -898,10 +872,10 @@ export default function App() {
                     </button>
                   </div>
 
-                  <div className="mt-6 flex items-center gap-3 text-xs text-[#666666]">
-                    <span>PNG, JPG, WebP, GIF, SVG</span>
+                  <div className="mt-6 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-[#666666]">
+                    <span>PNG, JPG, WebP, GIF, SVG, BMP</span>
                     <span>•</span>
-                    <span>No file size limits</span>
+                    <span>No uploads</span>
                     <span>•</span>
                     <span>100% In-Browser Private</span>
                   </div>
@@ -910,12 +884,13 @@ export default function App() {
                 /* TAB 2: ACTIVE QUEUE & CONVERSION DASHBOARD */
                 <div className="space-y-6">
                   {/* Active Queue Manager Component */}
-                  <div className="bg-[#f4f4f1] rounded-2xl border border-[#b8b8b8] p-5 shadow-xs">
+                  <div className="bg-[#f4f4f1] rounded-2xl border border-[#b8b8b8] p-3 sm:p-5 shadow-xs">
                     <QueueManager
                       items={items}
+                      busy={busy === 'crop'}
                       onRemove={removeItem}
-                      onMoveUp={moveItemUp}
-                      onMoveDown={moveItemDown}
+                      onMoveUp={(index) => moveItem(index, -1)}
+                      onMoveDown={(index) => moveItem(index, 1)}
                       onRotate={rotateItem}
                       onDuplicate={duplicateItem}
                       onClearAll={clearAllItems}
@@ -925,11 +900,8 @@ export default function App() {
                         setActivePreviewItem(item);
                         setPreviewOpen(true);
                       }}
-                      onCropItem={(item) => {
-                        setActiveCropItem(item);
-                        setCropOpen(true);
-                      }}
-                      onReorder={handleReorder}
+                      onCropItem={setActiveCropItem}
+                      onReorder={setItems}
                       onApplyGlobalCrop={applyGlobalTopCrop}
                     />
                   </div>
@@ -939,7 +911,8 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setShowSettings(!showSettings)}
-                      className="inline-flex items-center gap-2 text-xs font-semibold text-[#151515] hover:text-[#313033] transition-colors cursor-pointer"
+                      aria-expanded={showSettings}
+                      className="inline-flex flex-wrap items-center gap-2 text-xs font-semibold text-[#151515] hover:text-[#313033] transition-colors cursor-pointer"
                     >
                       <SlidersHorizontal className="w-4 h-4 text-[#313033]" />
                       <span>{showSettings ? 'Hide PDF Settings' : 'Customize PDF Settings & Layout'}</span>
@@ -969,19 +942,28 @@ export default function App() {
                       <button
                         type="button"
                         onClick={handleOpenLivePreview}
-                        disabled={isConverting}
-                        className="editorial-btn editorial-btn-outlined py-2.5 px-4 text-xs font-semibold border-[#aaa] text-[#151515] hover:bg-[#dedede] cursor-pointer justify-center"
+                        disabled={!!busy}
+                        className="editorial-btn editorial-btn-outlined py-2.5 px-4 text-xs font-semibold border-[#aaa] text-[#151515] hover:bg-[#dedede] cursor-pointer justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <Eye className="w-3.5 h-3.5 text-[#313033]" />
+                        {busy === 'preview' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Eye className="w-3.5 h-3.5 text-[#313033]" />
+                        )}
                         Live Document Preview
                       </button>
 
                       <button
                         type="button"
                         onClick={handleDownloadStitchedPng}
-                        className="editorial-btn editorial-btn-tonal py-2.5 px-4 text-xs font-semibold text-[#151515] bg-[#daf200] hover:bg-[#C2D7FA] inline-flex cursor-pointer justify-center"
+                        disabled={!!busy}
+                        className="editorial-btn editorial-btn-tonal py-2.5 px-4 text-xs font-semibold text-[#151515] bg-[#daf200] hover:bg-[#C2D7FA] inline-flex cursor-pointer justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <FileImage className="w-3.5 h-3.5 text-[#313033]" />
+                        {busy === 'png' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <FileImage className="w-3.5 h-3.5 text-[#313033]" />
+                        )}
                         Export as Long PNG
                       </button>
                     </div>
@@ -990,10 +972,10 @@ export default function App() {
                       <button
                         type="button"
                         onClick={handleExportPDF}
-                        disabled={isConverting}
-                        className="editorial-btn editorial-btn-dark py-2.5 px-6 text-sm font-semibold shadow-md cursor-pointer justify-center"
+                        disabled={!!busy}
+                        className="editorial-btn editorial-btn-dark py-2.5 px-6 text-sm font-semibold shadow-md cursor-pointer justify-center disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        {isConverting ? (
+                        {busy === 'pdf' ? (
                           <>
                             <Loader2 className="w-4 h-4 animate-spin" />
                             <span>Compiling PDF...</span>
@@ -1030,44 +1012,40 @@ export default function App() {
       </main>
 
       {/* Global Document & Item Preview Modal */}
-      <PreviewModal
-        isOpen={previewOpen}
-        onClose={() => {
-          setPreviewOpen(false);
-          setActivePreviewItem(null);
-        }}
-        pdfUrl={previewPdfUrl}
-        dimensionsText={previewDimensionsText}
-        totalPages={previewTotalPages}
-        fileName={settings.fileName}
-        onDownloadPdf={handleExportPDF}
-        onDownloadPng={handleDownloadStitchedPng}
-        singleImageItem={activePreviewItem}
-      />
+      {previewOpen && (
+        <Suspense fallback={null}>
+          <PreviewModal
+            onClose={() => {
+              setPreviewOpen(false);
+              setActivePreviewItem(null);
+            }}
+            pdfUrl={previewPdf?.url ?? null}
+            dimensionsText={previewPdf?.dimensionsText ?? ''}
+            fileName={pdfFileName}
+            onDownloadPdf={() => {
+              if (!previewPdf) return;
+              downloadBlob(previewPdf.blob, pdfFileName);
+              showToast('PDF downloaded');
+            }}
+            onDownloadPng={handleDownloadStitchedPng}
+            singleImageItem={activePreviewItem}
+          />
+        </Suspense>
+      )}
 
-      <CropModal
-        isOpen={cropOpen}
-        onClose={() => {
-          setCropOpen(false);
-          setActiveCropItem(null);
-        }}
-        item={activeCropItem}
-        onSave={(id, newBlob, newPreviewUrl) => {
-          setItems(items.map(it => {
-            if (it.id === id) {
-              URL.revokeObjectURL(it.previewUrl);
-              return {
-                ...it,
-                file: new File([newBlob], it.file.name, { type: it.file.type || 'image/png' }),
-                previewUrl: newPreviewUrl,
-                size: newBlob.size
-              };
-            }
-            return it;
-          }));
-          showToast('Image cropped successfully!');
-        }}
-      />
+      {activeCropItem && (
+        <Suspense fallback={null}>
+          <CropModal
+            key={activeCropItem.id}
+            item={activeCropItem}
+            onClose={() => setActiveCropItem(null)}
+            onSave={(id, edit) => {
+              replaceItem(id, edit);
+              showToast('Image cropped');
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* Footer */}
       <Footer />

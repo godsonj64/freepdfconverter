@@ -1,51 +1,39 @@
 import jsPDF from 'jspdf';
 import { ImageItem, ConversionSettings } from '../types';
+import { layoutContinuous, layoutPaginated, qualityToFormat } from './layout';
+import { getProcessedCanvas } from './imageOps';
+
+const DARK_BACKGROUND = '#0e0e11';
 
 /**
- * Rotates and returns a canvas with the oriented image data
+ * Encodes a canvas for embedding. JPEG has no alpha channel, so transparent
+ * pixels are flattened onto the page colour first instead of turning black.
  */
-export async function getProcessedCanvas(item: ImageItem): Promise<HTMLCanvasElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('Canvas context not available'));
-        return;
-      }
+function encodeForPdf(canvas: HTMLCanvasElement, settings: ConversionSettings): string {
+  const { mime, jpegQuality } = qualityToFormat(settings.quality);
+  if (mime === 'image/png') return canvas.toDataURL('image/png');
 
-      const rot = (item.rotation % 360 + 360) % 360;
-      const naturalW = img.naturalWidth || img.width;
-      const naturalH = img.naturalHeight || img.height;
-      if (rot === 90 || rot === 270) {
-        canvas.width = naturalH;
-        canvas.height = naturalW;
-      } else {
-        canvas.width = naturalW;
-        canvas.height = naturalH;
-      }
+  const flat = document.createElement('canvas');
+  flat.width = canvas.width;
+  flat.height = canvas.height;
+  const ctx = flat.getContext('2d');
+  if (!ctx) throw new Error('Canvas context not available');
+  ctx.fillStyle = settings.background === 'dark' ? DARK_BACKGROUND : '#ffffff';
+  ctx.fillRect(0, 0, flat.width, flat.height);
+  ctx.drawImage(canvas, 0, 0);
+  return flat.toDataURL(mime, jpegQuality);
+}
 
-      ctx.save();
-      if (rot === 90) {
-        ctx.translate(canvas.width, 0);
-        ctx.rotate((90 * Math.PI) / 180);
-      } else if (rot === 180) {
-        ctx.translate(canvas.width, canvas.height);
-        ctx.rotate((180 * Math.PI) / 180);
-      } else if (rot === 270) {
-        ctx.translate(0, canvas.height);
-        ctx.rotate((270 * Math.PI) / 180);
-      }
-      ctx.drawImage(img, 0, 0, naturalW, naturalH);
-      ctx.restore();
+function timestampLabel(date = new Date()): string {
+  // Built by hand: toLocaleString() can emit characters (e.g. U+202F) the built-in PDF fonts cannot draw.
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
-      resolve(canvas);
-    };
-    img.onerror = (err) => reject(err);
-    img.src = item.previewUrl;
-  });
+function paintBackground(doc: jsPDF, settings: ConversionSettings, width: number, height: number) {
+  if (settings.background !== 'dark') return;
+  doc.setFillColor(14, 14, 17);
+  doc.rect(0, 0, width, height, 'F');
 }
 
 /**
@@ -54,195 +42,90 @@ export async function getProcessedCanvas(item: ImageItem): Promise<HTMLCanvasEle
 export async function generatePdfBlob(
   items: ImageItem[],
   settings: ConversionSettings
-): Promise<{ blob: Blob; url: string; totalPages: number; dimensionsText: string }> {
+): Promise<{ blob: Blob; totalPages: number; dimensionsText: string }> {
   if (items.length === 0) {
     throw new Error('No images to convert');
   }
 
-  // 1. Process all canvases with rotation
-  const canvases = await Promise.all(items.map((item) => getProcessedCanvas(item)));
-
-  const marginMm = settings.margin === 'none' ? 0 : settings.margin === 'compact' ? 5 : 12;
-  const imageFormat = settings.quality === 'maximum' ? 'PNG' : 'JPEG';
-  const compressionQuality = settings.quality === 'compressed' ? 0.75 : settings.quality === 'high' ? 0.92 : 1.0;
+  const { format } = qualityToFormat(settings.quality);
 
   if (settings.layoutMode === 'continuous') {
-    // --- Continuous Canvas PDF ---
-    const pdfWidth = 210; // A4 standard width in mm
-    const usableWidth = pdfWidth - marginMm * 2;
-
-    let totalHeightMm = marginMm;
-    const slices: { canvas: HTMLCanvasElement; scaledHeightMm: number; yPosMm: number }[] = [];
-
-    for (let i = 0; i < canvases.length; i++) {
-      const c = canvases[i];
-      const scaledHeightMm = (c.height * usableWidth) / c.width;
-      slices.push({
-        canvas: c,
-        scaledHeightMm,
-        yPosMm: totalHeightMm,
-      });
-      totalHeightMm += scaledHeightMm;
-    }
-    totalHeightMm += marginMm;
-
-    // Minimum height of 100mm to prevent invalid format
-    const finalHeightMm = Math.max(totalHeightMm, 100);
+    // Measure from the real canvases: stored dimensions can be stale for SVGs.
+    const canvases: HTMLCanvasElement[] = [];
+    for (const item of items) canvases.push(await getProcessedCanvas(item));
+    const layout = layoutContinuous(
+      canvases.map((c) => ({ width: c.width, height: c.height })),
+      settings
+    );
 
     const doc = new jsPDF({
-      orientation: finalHeightMm < pdfWidth ? 'landscape' : 'portrait',
+      orientation: layout.pageHeight < layout.pageWidth ? 'landscape' : 'portrait',
       unit: 'mm',
-      format: [pdfWidth, finalHeightMm],
+      format: [layout.pageWidth, layout.pageHeight],
       compress: settings.quality !== 'maximum',
     });
+    paintBackground(doc, settings, layout.pageWidth, layout.pageHeight);
 
-    if (settings.background === 'dark') {
-      doc.setFillColor(14, 14, 17);
-      doc.rect(0, 0, pdfWidth, finalHeightMm, 'F');
-    }
-
-    slices.forEach((slice) => {
-      const dataUrl = slice.canvas.toDataURL(
-        imageFormat === 'PNG' ? 'image/png' : 'image/jpeg',
-        compressionQuality
-      );
-      doc.addImage(
-        dataUrl,
-        imageFormat,
-        marginMm,
-        slice.yPosMm,
-        usableWidth,
-        slice.scaledHeightMm,
-        undefined,
-        'FAST'
-      );
+    canvases.forEach((canvas, i) => {
+      const p = layout.placements[i];
+      doc.addImage(encodeForPdf(canvas, settings), format, p.x, p.y, p.width, p.height, undefined, 'FAST');
     });
 
     if (settings.addTimestamp) {
       doc.setFontSize(8);
       doc.setTextColor(150, 150, 160);
-      const dateStr = `Generated by FreePDFConverter • ${new Date().toLocaleString()}`;
-      doc.text(dateStr, marginMm, finalHeightMm - 3);
-    }
-
-    const blob = doc.output('blob');
-    const url = URL.createObjectURL(blob);
-    return {
-      blob,
-      url,
-      totalPages: 1,
-      dimensionsText: `${Math.round(pdfWidth)} × ${Math.round(finalHeightMm)} mm (Single Continuous Page)`,
-    };
-  } else {
-    // --- Paginated Mode (A4 or US Letter) ---
-    const isLetter = settings.layoutMode === 'paginated_letter';
-    const pageWidth = isLetter ? 215.9 : 210; // mm
-    const pageHeight = isLetter ? 279.4 : 297; // mm
-    const usableWidth = pageWidth - marginMm * 2;
-    const usableHeight = pageHeight - marginMm * 2 - (settings.showPageNumbers ? 10 : 0);
-
-    const doc = new jsPDF({
-      orientation: 'portrait',
-      unit: 'mm',
-      format: isLetter ? 'letter' : 'a4',
-      compress: settings.quality !== 'maximum',
-    });
-
-    let isFirstPage = true;
-    let pageCount = 0;
-
-    for (let i = 0; i < canvases.length; i++) {
-      const c = canvases[i];
-      const imgRatio = c.width / c.height;
-      let renderW = usableWidth;
-      let renderH = usableWidth / imgRatio;
-
-      // If the image is taller than the usable height, scale to fit height or split
-      if (renderH > usableHeight) {
-        renderH = usableHeight;
-        renderW = usableHeight * imgRatio;
-      }
-
-      const xPos = marginMm + (usableWidth - renderW) / 2;
-      const yPos = marginMm + (usableHeight - renderH) / 2;
-
-      if (!isFirstPage) {
-        doc.addPage();
-      }
-      isFirstPage = false;
-      pageCount++;
-
-      if (settings.background === 'dark') {
-        doc.setFillColor(14, 14, 17);
-        doc.rect(0, 0, pageWidth, pageHeight, 'F');
-      }
-
-      const dataUrl = c.toDataURL(
-        imageFormat === 'PNG' ? 'image/png' : 'image/jpeg',
-        compressionQuality
+      doc.text(
+        `Generated by FreePDFConverter - ${timestampLabel()}`,
+        layout.pageWidth / 2,
+        layout.pageHeight - 3,
+        { align: 'center' }
       );
-      doc.addImage(dataUrl, imageFormat, xPos, yPos, renderW, renderH, undefined, 'FAST');
-
-      if (settings.showPageNumbers) {
-        doc.setFontSize(9);
-        doc.setTextColor(140, 140, 150);
-        doc.text(`Page ${pageCount}`, pageWidth / 2, pageHeight - 5, { align: 'center' });
-      }
-
-      if (settings.addTimestamp) {
-        doc.setFontSize(7);
-        doc.setTextColor(160, 160, 170);
-        doc.text(`FreePDFConverter`, marginMm, pageHeight - 5);
-      }
     }
 
-    const blob = doc.output('blob');
-    const url = URL.createObjectURL(blob);
     return {
-      blob,
-      url,
-      totalPages: pageCount,
-      dimensionsText: `${pageCount} Page${pageCount !== 1 ? 's' : ''} (${isLetter ? 'US Letter' : 'A4 Standard'})`,
+      blob: doc.output('blob'),
+      totalPages: 1,
+      dimensionsText: `${Math.round(layout.pageWidth)} × ${Math.round(layout.pageHeight)} mm (Single Continuous Page)`,
     };
   }
-}
 
-/**
- * Merges all images vertically into a single high-resolution stitched PNG image
- */
-export async function generateStitchedPng(items: ImageItem[]): Promise<{ blob: Blob; url: string }> {
-  if (items.length === 0) throw new Error('No images to stitch');
-
-  const canvases = await Promise.all(items.map((item) => getProcessedCanvas(item)));
-
-  const targetWidth = Math.max(...canvases.map((c) => c.width));
-  let totalHeight = 0;
-
-  const sliceData = canvases.map((c) => {
-    const scaledHeight = (c.height * targetWidth) / c.width;
-    const y = totalHeight;
-    totalHeight += scaledHeight;
-    return { canvas: c, scaledHeight, y };
+  // --- Paginated Mode (A4 or US Letter) ---
+  const isLetter = settings.layoutMode === 'paginated_letter';
+  const { pageWidth, pageHeight } = layoutPaginated([], settings);
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: isLetter ? 'letter' : 'a4',
+    compress: settings.quality !== 'maximum',
   });
+  const stamp = timestampLabel();
 
-  const mergedCanvas = document.createElement('canvas');
-  mergedCanvas.width = targetWidth;
-  mergedCanvas.height = totalHeight;
-  const ctx = mergedCanvas.getContext('2d');
+  for (let i = 0; i < items.length; i++) {
+    if (i > 0) doc.addPage();
+    paintBackground(doc, settings, pageWidth, pageHeight);
 
-  if (!ctx) throw new Error('Canvas context not available');
+    // One page at a time keeps only a single decoded image in memory.
+    const canvas = await getProcessedCanvas(items[i]);
+    const [p] = layoutPaginated([{ width: canvas.width, height: canvas.height }], settings).placements;
+    doc.addImage(encodeForPdf(canvas, settings), format, p.x, p.y, p.width, p.height, undefined, 'FAST');
 
-  sliceData.forEach((slice) => {
-    ctx.drawImage(slice.canvas, 0, slice.y, targetWidth, slice.scaledHeight);
-  });
+    if (settings.showPageNumbers) {
+      doc.setFontSize(9);
+      doc.setTextColor(140, 140, 150);
+      doc.text(`Page ${i + 1} of ${items.length}`, pageWidth / 2, pageHeight - 5, { align: 'center' });
+    }
 
-  return new Promise((resolve, reject) => {
-    mergedCanvas.toBlob((blob) => {
-      if (blob) {
-        resolve({ blob, url: URL.createObjectURL(blob) });
-      } else {
-        reject(new Error('Failed to generate PNG blob'));
-      }
-    }, 'image/png');
-  });
+    if (settings.addTimestamp) {
+      doc.setFontSize(7);
+      doc.setTextColor(160, 160, 170);
+      doc.text(`FreePDFConverter - ${stamp}`, pageWidth - 8, pageHeight - 5, { align: 'right' });
+    }
+  }
+
+  const pageCount = items.length;
+  return {
+    blob: doc.output('blob'),
+    totalPages: pageCount,
+    dimensionsText: `${pageCount} Page${pageCount !== 1 ? 's' : ''} (${isLetter ? 'US Letter' : 'A4 Standard'})`,
+  };
 }
