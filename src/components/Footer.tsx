@@ -1,5 +1,6 @@
 import React from 'react';
-import { Layers, ShieldCheck, ArrowUp } from 'lucide-react';
+import { ShieldCheck, ArrowUp } from 'lucide-react';
+import { Logo } from './Logo';
 
 export const Footer: React.FC = () => {
   const scrollToTop = () => {
@@ -10,14 +11,7 @@ export const Footer: React.FC = () => {
     <footer className="mt-40 border-t border-[#b8b8b8] pt-16 pb-12 bg-[#f4f4f1]">
       <div className="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-8">
         <div className="flex flex-col items-center md:items-start gap-2">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-[#313033] flex items-center justify-center text-white shadow-xs">
-              <Layers className="w-4 h-4 text-white" />
-            </div>
-            <span className="font-extrabold text-xl tracking-tight text-[#151515]">
-              Free<span className="text-[#313033]">PDF</span>Converter
-            </span>
-          </div>
+          <Logo size={36} wordmarkClassName="text-xl" />
           <p className="text-xs text-[#474747] max-w-sm text-center md:text-left">
             The free, private, browser-based continuous and paginated PDF studio for long screenshots, receipts, and web captures.
           </p>

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Layers, ArrowUpRight, ShieldCheck, FileCheck } from 'lucide-react';
+import { ArrowUpRight, ShieldCheck, FileCheck } from 'lucide-react';
+import { Logo } from './Logo';
 
 interface HeaderProps {
   queueCount: number;
@@ -15,12 +16,7 @@ export const Header: React.FC<HeaderProps> = ({ queueCount, onScrollToConverter 
           onClick={onScrollToConverter}
           className="flex items-center gap-2 sm:gap-3 cursor-pointer select-none group min-w-0"
         >
-          <div className="w-8 h-8 sm:w-9 sm:h-9 shrink-0 rounded-xl bg-[var(--charcoal)] flex items-center justify-center text-white shadow-sm transition-transform duration-200 group-hover:scale-105">
-            <Layers className="w-4 h-4 sm:w-5 sm:h-5" />
-          </div>
-          <span className="font-bold text-lg sm:text-xl tracking-tight text-[var(--ink)] truncate">
-            Free<span className="text-[var(--charcoal)]">PDF</span>Converter
-          </span>
+          <Logo size={34} wordmarkClassName="text-base sm:text-xl" className="transition-transform duration-200 group-hover:scale-[1.02]" />
           <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--ink)] bg-[var(--accent)] px-3 py-1 rounded-full ml-1.5 border border-[var(--ink)]">
             <ShieldCheck className="w-3.5 h-3.5 text-[var(--ink)]" />
             100% In-Browser & Free
@@ -56,7 +52,8 @@ export const Header: React.FC<HeaderProps> = ({ queueCount, onScrollToConverter 
             onClick={onScrollToConverter}
             className="editorial-btn editorial-btn-dark text-xs sm:text-sm py-2 px-5"
           >
-            Launch Studio
+            <span className="sm:hidden">Start</span>
+            <span className="hidden sm:inline">Launch Studio</span>
             <ArrowUpRight className="w-4 h-4" />
           </button>
         </div>

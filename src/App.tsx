@@ -7,7 +7,6 @@ import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 
 import {
   Upload,
   ArrowRight,
-  Layers,
   Loader2,
   Globe,
   Link as LinkIcon,
@@ -32,6 +31,7 @@ import { FeatureShowcase } from './components/FeatureShowcase';
 import { FAQSection } from './components/FAQSection';
 import { MissionStatement } from './components/MissionStatement';
 import { Footer } from './components/Footer';
+import { LogoMark } from './components/Logo';
 import { ImageItem, ConversionSettings } from './types';
 import { bakeItemEdit, downloadBlob, generateStitchedPng, loadImage } from './utils/imageOps';
 import { isSupportedImage, sanitizeFileName, SUPPORTED_MIME_TYPES } from './utils/layout';
@@ -630,9 +630,7 @@ export default function App() {
             {/* Top Bar with Tabs */}
             <div className="px-4 sm:px-6 py-5 bg-[#f4f4f1] border-b border-[#b8b8b8] flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-2.5 font-semibold text-[#151515] text-sm">
-                <div className="w-8 h-8 rounded-xl bg-[#daf200] text-[#313033] flex items-center justify-center shadow-xs">
-                  <Layers className="w-4 h-4" />
-                </div>
+                <LogoMark size={32} />
                 <span>FreePDFConverter Studio</span>
               </div>
 
